@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	helloVersion = "0.2"
+	helloVersion = "0.3"
 )
 
 var knownPaths []string
@@ -24,6 +24,7 @@ var boottime time.Time
 var banner string
 var requests int64
 var usr *user.User
+var env_banner string
 
 func inc() int64 {
 	return atomic.AddInt64(&requests, 1)
@@ -39,9 +40,7 @@ func main() {
 
 	tls := true
 
-	log.Print("version: ", helloVersion)
-	log.Print("runtime: ", runtime.Version())
-	log.Print("pid: ", os.Getpid())
+	log.Printf("version=%s runtime=%s pid=%d GOMAXPROCS=%d", helloVersion, runtime.Version(), os.Getpid(), runtime.GOMAXPROCS(0))
 
 	var errUser error
 	usr, errUser = user.Current()
@@ -69,6 +68,11 @@ func main() {
 	flag.Parse()
 
 	keepalive := !disableKeepalive
+	
+	env_banner = os.Getenv("GWH_BANNER")
+        if env_banner != "" {
+                banner = env_banner
+        }
 
 	log.Print("banner: ", banner)
 	log.Print("keepalive: ", keepalive)
@@ -173,8 +177,9 @@ func (handler staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func rootHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
 	count := inc()
-	msg := fmt.Sprintf("rootHandler: req=%d url=%s from=%s", count, r.URL.Path, r.RemoteAddr)
-	log.Print(msg)
+	log.Printf("rootHandler: req=%d from=%s", count, r.RemoteAddr)
+	log.Printf("rootHandler: req=%d method=%s host=%s path=%s", count, r.Method, r.Host, r.URL.Path)
+	log.Printf("rootHandler: req=%d query=%s", count, r.URL.RawQuery)
 
 	var paths string
 	for _, p := range knownPaths {
@@ -183,7 +188,14 @@ func rootHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
 
 	var errMsg string
 	if r.URL.Path != "/" {
-		errMsg = fmt.Sprintf("<h2>Path not found!</h2>Path not found: [%s]", r.URL.Path)
+		format := `
+<h2>Path not found!</h2>
+Method: %s<br>
+Host: %s<br>
+Path not found: [%s]<br>
+Query: [%s]<br>
+`
+		errMsg = fmt.Sprintf(format, r.Method, r.Host, r.URL.Path, r.URL.RawQuery)
 	}
 
 	header :=
@@ -202,6 +214,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
 	bodyTempl :=
 		`<h2>Welcome!</h2>
 	gowebhello version %s runtime %s<br>
+        Keepalive: %v<br>
 	Application banner: %s<br>
 	Application arguments: %v<br>
 	Application dir: %s<br>
@@ -209,6 +222,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
 	User: %s (uid: %s)<br>
 	Server hostname: %s<br>
 	Your address: %s<br>
+	Request method=%s host=%s path=[%s] query=[%s]<br>
 	Current time: %s<br>
 	Uptime: %s<br>
 	Requests: %d<br>
@@ -242,7 +256,7 @@ func rootHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
 		uid = usr.Uid
 	}
 
-	body := fmt.Sprintf(bodyTempl, helloVersion, runtime.Version(), banner, os.Args, cwd, os.Getpid(), username, uid, host, r.RemoteAddr, now, time.Since(boottime), get(), errMsg, paths)
+	body := fmt.Sprintf(bodyTempl, helloVersion, runtime.Version(), keepalive, banner, os.Args, cwd, os.Getpid(), username, uid, host, r.RemoteAddr, r.Method, r.Host, r.URL.Path, r.URL.RawQuery, now, time.Since(boottime), get(), errMsg, paths)
 
 	if !keepalive {
 		w.Header().Set("Connection", "close")
