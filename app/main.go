@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -16,7 +17,7 @@ import (
 )
 
 const (
-	helloVersion = "0.3"
+	helloVersion = "0.4"
 )
 
 var knownPaths []string
@@ -24,7 +25,6 @@ var boottime time.Time
 var banner string
 var requests int64
 var usr *user.User
-var env_banner string
 
 func inc() int64 {
 	return atomic.AddInt64(&requests, 1)
@@ -41,6 +41,11 @@ func main() {
 	tls := true
 
 	log.Printf("version=%s runtime=%s pid=%d GOMAXPROCS=%d", helloVersion, runtime.Version(), os.Getpid(), runtime.GOMAXPROCS(0))
+
+	defaultBanner := "banner default"
+	if envBanner := os.Getenv("GWH_BANNER"); envBanner != "" {
+		defaultBanner = envBanner
+	}
 
 	var errUser error
 	usr, errUser = user.Current()
@@ -63,16 +68,11 @@ func main() {
 	flag.StringVar(&cert, "cert", "cert.pem", "TLS cert file")
 	flag.StringVar(&addr, "addr", ":8080", "HTTP listen address")
 	flag.StringVar(&httpsAddr, "httpsAddr", ":8443", "HTTPS listen address")
-	flag.StringVar(&banner, "banner", "deploy #4", "banner will be displayed")
+	flag.StringVar(&banner, "banner", defaultBanner, "banner will be displayed (env var GWH_BANNER sets default banner)")
 	flag.BoolVar(&disableKeepalive, "disableKeepalive", false, "disable keepalive")
 	flag.Parse()
 
 	keepalive := !disableKeepalive
-	
-	env_banner = os.Getenv("GWH_BANNER")
-        if env_banner != "" {
-                banner = env_banner
-        }
 
 	log.Print("banner: ", banner)
 	log.Print("keepalive: ", keepalive)
@@ -265,7 +265,32 @@ Query: [%s]<br>
 	io.WriteString(w, header)
 	io.WriteString(w, body)
 	showHeaders(w, r)
+	showReqBody(w, r)
 	io.WriteString(w, footer)
+}
+
+func showReqBody(w http.ResponseWriter, r *http.Request) {
+
+	io.WriteString(w, "<h2>Request Body</h2>\n")
+
+	buf, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		m := fmt.Sprintf("request body: %v", err)
+		log.Print(m)
+		io.WriteString(w, m)
+		return
+	}
+
+	bodySize := len(buf)
+
+	log.Printf("body size: %d", bodySize)
+
+	io.WriteString(w, fmt.Sprintf("<p>request body size: %d</p>\n", bodySize))
+
+	io.WriteString(w, "<pre>\n")
+	io.WriteString(w, string(buf))
+	io.WriteString(w, "\n")
+	io.WriteString(w, "</pre>\n")
 }
 
 func showHeaders(w http.ResponseWriter, r *http.Request) {
