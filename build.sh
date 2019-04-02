@@ -1,3 +1,3 @@
 #!/bin/bash
 
-docker build -t web-scratch .
+docker build -t udhos/web-scratch:latest .
