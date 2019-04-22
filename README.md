@@ -10,6 +10,10 @@ Run image:
 
     ./run.sh
 
+Tag image:
+
+    docker tag udhos/web-scratch udhos/web-scratch:0.4.2
+
 Push to registry:
 
     docker login

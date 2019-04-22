@@ -1,7 +1,7 @@
 # STEP 1 build executable binary
 
 #FROM golang:alpine as builder
-FROM golang:1.12.1-alpine as builder
+FROM golang:1.12.4-alpine as builder
 
 # Create appuser on builder image
 RUN adduser -D -g '' appuser
