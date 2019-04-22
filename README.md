@@ -18,6 +18,7 @@ Push to registry:
 
     docker login
     docker push udhos/web-scratch:latest
+    docker push udhos/web-scratch:0.4.2
 
 Find a generated container image as `udhos/web-scratch` here:
 
