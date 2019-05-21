@@ -14,10 +14,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 const (
-	helloVersion = "0.4"
+	helloVersion = "0.7"
 )
 
 var knownPaths []string
@@ -25,7 +26,11 @@ var boottime time.Time
 var banner string
 var requests int64
 var quota int64
+var quotaDuration time.Duration
+var exitOnQuota bool
+var quotaStatus int
 var usr *user.User
+var burnCPU bool
 
 func inc() int64 {
 	return atomic.AddInt64(&requests, 1)
@@ -36,7 +41,7 @@ func get() int64 {
 }
 
 func getVersion() string {
-	return fmt.Sprintf("version=%s runtime=%s pid=%d host=%s GOMAXPROCS=%d", helloVersion, runtime.Version(), os.Getpid(), getHostname(), runtime.GOMAXPROCS(0))
+	return fmt.Sprintf("version=%s runtime=%s pid=%d host=%s GOMAXPROCS=%d OS=%s ARCH=%s", helloVersion, runtime.Version(), os.Getpid(), getHostname(), runtime.GOMAXPROCS(0), runtime.GOOS, runtime.GOARCH)
 }
 
 func getHostname() string {
@@ -87,6 +92,7 @@ func main() {
 	var disableKeepalive bool
 	var touch string
 	var showVersion bool
+	var quotaTime string
 
 	flag.StringVar(&key, "key", "key.pem", "TLS key file")
 	flag.StringVar(&cert, "cert", "cert.pem", "TLS cert file")
@@ -97,6 +103,10 @@ func main() {
 	flag.BoolVar(&showVersion, "version", false, "does not actually run")
 	flag.BoolVar(&disableKeepalive, "disableKeepalive", false, "disable keepalive")
 	flag.Int64Var(&quota, "quota", 0, "if defined, service is terminated after serving that amount of requests")
+	flag.StringVar(&quotaTime, "quotaTime", "", "if defined, service is terminated after serving that amount of time")
+	flag.BoolVar(&exitOnQuota, "exitOnQuota", false, "exit if quota reached")
+	flag.IntVar(&quotaStatus, "quotaStatus", 500, "http status code for quota reached")
+	flag.BoolVar(&burnCPU, "burnCpu", false, "enable /burncpu path")
 	flag.Parse()
 
 	if touch != "" {
@@ -105,8 +115,26 @@ func main() {
 
 	keepalive := !disableKeepalive
 
+	if quotaTime != "" {
+		// append "s" to all-numeric duration string
+		last := len(quotaTime) - 1
+		if unicode.IsDigit(rune(quotaTime[last])) {
+			quotaTime += "s"
+		}
+
+		// parse quotaTime
+		var errDur error
+		quotaDuration, errDur = time.ParseDuration(quotaTime)
+		if errDur != nil {
+			log.Printf("quotaTime: %v", errDur)
+		}
+	}
+
 	log.Print("banner: ", banner)
 	log.Print("keepalive: ", keepalive)
+	log.Printf("burnCpu=%v", burnCPU)
+	log.Printf("quotaTime=%v", quotaDuration)
+	log.Printf("requests quota=%d (0=unlimited) exitOnQuota=%v quotaStatus=%d", quota, exitOnQuota, quotaStatus)
 
 	if !fileExists(key) {
 		log.Printf("TLS key file not found: %s - disabling TLS", key)
@@ -125,11 +153,15 @@ func main() {
 	// default handler
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { rootHandler(w, r, keepalive) })
 
+	if burnCPU {
+		log.Print("burnCpu: enabling path /burncpu")
+		http.HandleFunc("/burncpu", func(w http.ResponseWriter, r *http.Request) { burncpuHandler(w, r, keepalive) })
+		http.HandleFunc("/burncpu/", func(w http.ResponseWriter, r *http.Request) { burncpuHandler(w, r, keepalive) })
+	}
+
 	registerStatic("/www/", currDir)
 
 	log.Printf("using TCP ports HTTP=%s HTTPS=%s TLS=%v", addr, httpsAddr, tls)
-
-	log.Printf("requests quota: %d (0=unlimited)", quota)
 
 	if tls {
 		serveHTTPS(addr, httpsAddr, cert, key, keepalive)
@@ -209,14 +241,57 @@ func registerStatic(path, dir string) {
 func (handler staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	count := inc()
 	log.Printf("staticHandler.ServeHTTP req=%d url=%s from=%s", count, r.URL.Path, r.RemoteAddr)
+	if reached := checkQuota("staticHandler.ServeHTTP", count); reached {
+		quotaError(w)
+		return
+	}
 	handler.innerHandler.ServeHTTP(w, r)
-	checkQuota("staticHandler.ServeHTTP", count)
 }
 
-func checkQuota(label string, count int64) {
+func quotaError(w http.ResponseWriter) {
+	http.Error(w, "Quota forced malfunction", quotaStatus)
+}
+
+func checkQuota(label string, count int64) bool {
 	if quota > 0 && count > quota {
-		log.Printf("%s req=%d quota=%d EXITING", label, count, quota)
-		os.Exit(0)
+		if exitOnQuota {
+			log.Printf("%s req=%d quota=%d exitOnQuota=%v quotaStatus=%d reached EXITING", label, count, quota, exitOnQuota, quotaStatus)
+			os.Exit(0)
+		}
+		log.Printf("%s req=%d quota=%d exitOnQuota=%v quotaStatus=%d reached", label, count, quota, exitOnQuota, quotaStatus)
+		return true
+	}
+	if quotaDuration > 0 {
+		uptime := time.Since(boottime)
+		timeLeft := quotaDuration - uptime
+		if timeLeft <= 0 {
+			if exitOnQuota {
+				log.Printf("%s req=%d exitOnQuota=%v uptime=%v quotaTime=%v timeLeft=%v reached EXITING", label, count, exitOnQuota, uptime, quotaDuration, timeLeft)
+				os.Exit(0)
+			}
+			log.Printf("%s req=%d exitOnQuota=%v uptime=%v quotaTime=%v timeLeft=%v reached", label, count, exitOnQuota, uptime, quotaDuration, timeLeft)
+			return true
+		}
+	}
+	return false
+}
+
+func burncpuHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
+	count := inc()
+	log.Printf("burncpuHandler: req=%d from=%s", count, r.RemoteAddr)
+
+	if reached := checkQuota("burncpuHandler", count); reached {
+		quotaError(w)
+		return
+	}
+
+	burn()
+
+	io.WriteString(w, "done\n")
+}
+
+func burn() {
+	for i := 0; i < 2000000000; i++ {
 	}
 }
 
@@ -225,6 +300,11 @@ func rootHandler(w http.ResponseWriter, r *http.Request, keepalive bool) {
 	log.Printf("rootHandler: req=%d from=%s", count, r.RemoteAddr)
 	log.Printf("rootHandler: req=%d method=%s host=%s path=%s", count, r.Method, r.Host, r.URL.Path)
 	log.Printf("rootHandler: req=%d query=%s", count, r.URL.RawQuery)
+
+	if reached := checkQuota("rootHandler", count); reached {
+		quotaError(w)
+		return
+	}
 
 	var paths string
 	for _, p := range knownPaths {
@@ -258,7 +338,7 @@ Query: [%s]<br>
 `
 	bodyTempl :=
 		`<h2>Welcome!</h2>
-	gowebhello version %s runtime %s<br>
+	gowebhello version %s runtime %s os=%s arch=%s<br>
         Keepalive: %v<br>
 	Application banner: %s<br>
 	Application arguments: %v<br>
@@ -270,7 +350,8 @@ Query: [%s]<br>
 	Request method=%s host=%s path=[%s] query=[%s]<br>
 	Current time: %s<br>
 	Uptime: %s<br>
-	Requests: %d<br>
+	Requests: %d (Quota=%d ExitOnQuota=%v QuotaStaus=%d QuotaTime=%v TimeLeft=%v)<br>
+	BurnCPU: %v<br>
     %s
     <h2>All known paths:</h2>
     %s
@@ -298,7 +379,13 @@ Query: [%s]<br>
 		uid = usr.Uid
 	}
 
-	body := fmt.Sprintf(bodyTempl, helloVersion, runtime.Version(), keepalive, banner, os.Args, cwd, os.Getpid(), username, uid, host, r.RemoteAddr, r.Method, r.Host, r.URL.Path, r.URL.RawQuery, now, time.Since(boottime), get(), errMsg, paths)
+	uptime := time.Since(boottime)
+	timeLeft := quotaDuration - uptime
+	if timeLeft < 0 {
+		timeLeft = 0
+	}
+
+	body := fmt.Sprintf(bodyTempl, helloVersion, runtime.Version(), runtime.GOOS, runtime.GOARCH, keepalive, banner, os.Args, cwd, os.Getpid(), username, uid, host, r.RemoteAddr, r.Method, r.Host, r.URL.Path, r.URL.RawQuery, now, uptime, get(), quota, exitOnQuota, quotaStatus, quotaDuration, timeLeft, burnCPU, errMsg, paths)
 
 	if !keepalive {
 		w.Header().Set("Connection", "close")
@@ -309,8 +396,6 @@ Query: [%s]<br>
 	showHeaders(w, r)
 	showReqBody(w, r)
 	io.WriteString(w, footer)
-
-	checkQuota("rootHandler", count)
 }
 
 func showReqBody(w http.ResponseWriter, r *http.Request) {
