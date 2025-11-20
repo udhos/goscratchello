@@ -1,19 +1,18 @@
 # STEP 1 build executable binary
 
 #FROM golang:alpine as builder
-FROM golang:1.12.5-alpine as builder
+FROM golang:1.25.4-alpine AS builder
 
 # Create appuser on builder image
 RUN adduser -D -g '' appuser
 
-COPY app/* $GOPATH/src/app/
-WORKDIR $GOPATH/src/app/
+COPY app/* /build/app/
+COPY go.mod /build/
 
-#get dependancies
-RUN go get -d -v
+WORKDIR /build
 
 #build the binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /go/bin/app
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -trimpath -o /app ./app
 
 # STEP 2 build a small image
 
@@ -24,8 +23,8 @@ FROM scratch
 COPY --from=builder /etc/passwd /etc/passwd
 
 # Copy our static executable
-COPY --from=builder /go/bin/app /go/bin/app
+COPY --from=builder /app /app
 
 USER appuser
 
-ENTRYPOINT ["/go/bin/app"]
+ENTRYPOINT ["/app"]
