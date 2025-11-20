@@ -4,11 +4,11 @@ Build container image from scratch for web app.
 
 Build image:
 
-    ./build.sh
+    ./docker-build.sh
 
 Run image:
 
-    ./run.sh
+    ./docker-run.sh
 
 Tag image:
 
