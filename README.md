@@ -12,13 +12,13 @@ Run image:
 
 Tag image:
 
-    docker tag udhos/web-scratch udhos/web-scratch:0.8.2
+    docker tag udhos/web-scratch udhos/web-scratch:0.8.2-upx
 
 Push to registry:
 
     docker login
     docker push udhos/web-scratch:latest
-    docker push udhos/web-scratch:0.8.2
+    docker push udhos/web-scratch:0.8.2-upx
 
 Find a generated container image as `udhos/web-scratch` here:
 
